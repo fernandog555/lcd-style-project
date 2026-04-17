@@ -1,0 +1,314 @@
+﻿<head>
+  <title>Corsair LCD Style</title>
+  <meta description="Temperature-focused Corsair-style dual sensor LCD face."/>
+  <meta publisher="Local Custom"/>
+
+  <meta property="sensor_left" label="Left Sensor" type="sensor" default="CPU Temp"/>
+  <meta property="sensor_right" label="Right Sensor" type="sensor" default="GPU Temp"/>
+
+  <meta property="label_left" label="Left Label" type="textfield" default="CPU"/>
+  <meta property="label_right" label="Right Label" type="textfield" default="GPU"/>
+
+  <meta property="bg_color" label="Background Color" type="color" default="#05070C"/>
+  <meta property="left_color" label="Left Accent" type="color" default="#1ED8B7"/>
+  <meta property="right_color" label="Right Accent" type="color" default="#AD2BFF"/>
+</head>
+
+<body style="margin:0;padding:0;overflow:hidden;background:transparent;">
+  <canvas id="exCanvas" width="480" height="480"></canvas>
+</body>
+
+<script>
+(function () {
+  // Canvas setup.
+  var canvas = document.getElementById("exCanvas");
+  var ctx = canvas.getContext("2d");
+
+  // Layout constants for the 480x480 LCD preview and current tuned scale.
+  var W = canvas.width;
+  var H = canvas.height;
+  var CX = W * 0.5;
+  var CY = H * 0.5;
+  var LAYOUT_SCALE = 1.53;
+
+  // Temperature gauge range is intentionally fixed for this effect.
+  var TEMP_MIN = 15;
+  var TEMP_MAX = 95;
+
+  // Sensor values are persisted between frames if reads fail.
+  var leftValue = 35;
+  var rightValue = 39;
+
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function str(v, d) {
+    return (typeof v === "string" && v.length) ? v : d;
+  }
+
+  // Parse a #RRGGBB (or #RGB) string into RGB channels.
+  function parseHexColor(hex, fallback) {
+    if (typeof hex !== "string") {
+      return fallback;
+    }
+
+    var raw = hex.trim().replace("#", "");
+    if (raw.length === 3) {
+      raw = raw[0] + raw[0] + raw[1] + raw[1] + raw[2] + raw[2];
+    }
+
+    if (!/^[0-9a-fA-F]{6}$/.test(raw)) {
+      return fallback;
+    }
+
+    return {
+      r: parseInt(raw.slice(0, 2), 16),
+      g: parseInt(raw.slice(2, 4), 16),
+      b: parseInt(raw.slice(4, 6), 16)
+    };
+  }
+
+  // Lighten/darken a color channel triplet by delta.
+  function shiftRgb(rgb, delta) {
+    return {
+      r: clamp(Math.round(rgb.r + delta), 0, 255),
+      g: clamp(Math.round(rgb.g + delta), 0, 255),
+      b: clamp(Math.round(rgb.b + delta), 0, 255)
+    };
+  }
+
+  function rgba(rgb, alpha) {
+    return "rgba(" + rgb.r + "," + rgb.g + "," + rgb.b + "," + alpha + ")";
+  }
+
+  // Build contrast-aware colors so text remains readable on light or dark backgrounds.
+  function colorPalette(bgRgb) {
+    var lum = (bgRgb.r * 0.2126) + (bgRgb.g * 0.7152) + (bgRgb.b * 0.0722);
+    var lightBg = lum > 155;
+
+    return {
+      mainText: lightBg ? "rgba(18,23,33,0.96)" : "rgba(241,245,255,0.95)",
+      outline: lightBg ? "rgba(255,255,255,0.92)" : "rgba(8,12,18,0.96)",
+      ring: lightBg ? "rgba(0,0,0,0.2)" : "rgba(255,255,255,0.08)",
+      track: lightBg ? "rgba(0,0,0,0.22)" : "rgba(255,255,255,0.12)"
+    };
+  }
+
+  // Read sensor data through SignalRGB's engine bridge.
+  function sensorFetch(name) {
+    if (!name || typeof name !== "string") {
+      return null;
+    }
+
+    try {
+      if (typeof engine !== "undefined" && engine && typeof engine.GetSensorValue === "function") {
+        return engine.GetSensorValue(name);
+      }
+      if (typeof engine !== "undefined" && engine && typeof engine.getSensorValue === "function") {
+        return engine.getSensorValue(name);
+      }
+    } catch (e) {
+      return null;
+    }
+
+    return null;
+  }
+
+  // Normalize engine payload to a number. Some hosts return number, others return { value }.
+  function sensorNumericValue(payload, fallback) {
+    if (typeof payload === "number" && isFinite(payload)) {
+      return payload;
+    }
+    if (payload && typeof payload.value === "number" && isFinite(payload.value)) {
+      return payload.value;
+    }
+    return fallback;
+  }
+
+  // Format clock as 12-hour time with AM/PM for the top label.
+  function currentTimeText() {
+    var d = new Date();
+    var h24 = d.getHours();
+    var suffix = h24 >= 12 ? "PM" : "AM";
+    var h12 = h24 % 12;
+    if (h12 === 0) {
+      h12 = 12;
+    }
+    var hh = String(h12).padStart(2, "0");
+    var mm = String(d.getMinutes()).padStart(2, "0");
+    return hh + ":" + mm + " " + suffix;
+  }
+
+  // Pull latest left/right sensor temperatures.
+  function readSensors() {
+    var leftName = str(window.sensor_left, "");
+    var rightName = str(window.sensor_right, "");
+
+    leftValue = sensorNumericValue(sensorFetch(leftName), leftValue);
+    rightValue = sensorNumericValue(sensorFetch(rightName), rightValue);
+  }
+
+  // Draw the circular face using a gradient derived from the chosen background color.
+  function drawBackground(bgRgb, palette) {
+    var centerColor = shiftRgb(bgRgb, 22);
+    var midColor = shiftRgb(bgRgb, 8);
+    var edgeColor = shiftRgb(bgRgb, -15);
+
+    var g = ctx.createRadialGradient(CX - 30, CY - 45, 35, CX, CY, 190);
+    g.addColorStop(0, rgba(centerColor, 1));
+    g.addColorStop(0.58, rgba(midColor, 1));
+    g.addColorStop(1, rgba(edgeColor, 1));
+
+    ctx.beginPath();
+    ctx.arc(CX, CY, 170, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(CX, CY, 170, 0, Math.PI * 2);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = palette.ring;
+    ctx.stroke();
+  }
+
+  // Draw one side gauge: gray track + colored active sweep based on normalized temperature.
+  function drawSideArc(centerAngle, norm, color, trackColor) {
+    var radius = 146;
+    var maxSweep = 2.7;
+    var minSweep = 0.24;
+    var activeSweep = minSweep + (maxSweep - minSweep) * clamp(norm, 0, 1);
+
+    var trackStart = centerAngle - (maxSweep * 0.5);
+    var trackEnd = centerAngle + (maxSweep * 0.5);
+    var activeStart = centerAngle - (activeSweep * 0.5);
+    var activeEnd = centerAngle + (activeSweep * 0.5);
+
+    ctx.beginPath();
+    ctx.arc(CX, CY, radius, trackStart, trackEnd, false);
+    ctx.lineWidth = 22;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = trackColor;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(CX, CY, radius, activeStart, activeEnd, false);
+    ctx.lineWidth = 20;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = color;
+    ctx.stroke();
+  }
+
+  // Draw text with a dynamic high-contrast outline for readability.
+  function drawOutlinedText(text, x, y, align, font, fillColor, outlineColor, outlineWidth) {
+    ctx.textAlign = align;
+    ctx.font = font;
+    ctx.lineJoin = "round";
+    ctx.miterLimit = 2;
+    ctx.lineWidth = outlineWidth;
+    ctx.strokeStyle = outlineColor;
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = fillColor;
+    ctx.fillText(text, x, y);
+  }
+
+  // Draw the clock, temperatures, and sensor labels.
+  function drawText(valLeft, valRight, leftColor, rightColor, palette) {
+    var clockText = currentTimeText();
+    var leftLabel = str(window.label_left, "CPU");
+    var rightLabel = str(window.label_right, "GPU");
+    var textYOffset = -12;
+
+    drawOutlinedText(
+      clockText,
+      CX,
+      CY - 34 + textYOffset,
+      "center",
+      "700 32px 'ROG Fonts', 'Orbitron', 'Oxanium', sans-serif",
+      palette.mainText,
+      palette.outline,
+      5
+    );
+
+    drawOutlinedText(
+      String(Math.round(valLeft)),
+      CX - 14,
+      CY + 36 + textYOffset,
+      "right",
+      "700 62px 'ROG Fonts', 'Orbitron', 'Oxanium', sans-serif",
+      palette.mainText,
+      palette.outline,
+      8
+    );
+
+    drawOutlinedText(
+      String(Math.round(valRight)),
+      CX + 18,
+      CY + 36 + textYOffset,
+      "left",
+      "700 62px 'ROG Fonts', 'Orbitron', 'Oxanium', sans-serif",
+      palette.mainText,
+      palette.outline,
+      8
+    );
+
+    drawOutlinedText(
+      leftLabel,
+      CX - 16,
+      CY + 85 + textYOffset,
+      "right",
+      "700 34px 'ROG Fonts', 'Orbitron', 'Oxanium', sans-serif",
+      leftColor,
+      palette.outline,
+      5
+    );
+
+    drawOutlinedText(
+      rightLabel,
+      CX + 18,
+      CY + 85 + textYOffset,
+      "left",
+      "700 34px 'ROG Fonts', 'Orbitron', 'Oxanium', sans-serif",
+      rightColor,
+      palette.outline,
+      5
+    );
+  }
+
+  // Main render pass for one frame.
+  function drawFace() {
+    var bgRgb = parseHexColor(str(window.bg_color, "#05070C"), { r: 5, g: 7, b: 12 });
+    var palette = colorPalette(bgRgb);
+    var leftColor = str(window.left_color, "#1ED8B7");
+    var rightColor = str(window.right_color, "#AD2BFF");
+
+    readSensors();
+
+    var leftNorm = clamp((leftValue - TEMP_MIN) / (TEMP_MAX - TEMP_MIN), 0, 1);
+    var rightNorm = clamp((rightValue - TEMP_MIN) / (TEMP_MAX - TEMP_MIN), 0, 1);
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+
+    // Scale from center so the full composition keeps its relative alignment.
+    ctx.translate(CX, CY);
+    ctx.scale(LAYOUT_SCALE, LAYOUT_SCALE);
+    ctx.translate(-CX, -CY);
+
+    drawBackground(bgRgb, palette);
+    drawSideArc(Math.PI, leftNorm, leftColor, palette.track);
+    drawSideArc(0, rightNorm, rightColor, palette.track);
+    drawText(leftValue, rightValue, leftColor, rightColor, palette);
+
+    ctx.restore();
+  }
+
+  // Continuous redraw updates sensor values and clock time live.
+  function frame() {
+    drawFace();
+    window.requestAnimationFrame(frame);
+  }
+
+  window.requestAnimationFrame(frame);
+})();
+</script>

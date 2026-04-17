@@ -29,6 +29,20 @@ Custom SignalRGB LCD face focused on dual temperature gauges with a Corsair-styl
 2. Restart SignalRGB (or reselect the LCD face).
 3. In SignalRGB LCD settings, choose **Corsair LCD Style**.
 
+## Screenshots
+
+### Example 1: LCD Preview In SignalRGB
+
+This shows the actual LCD screen preview inside SignalRGB.
+
+![Example 1 - LCD preview in SignalRGB](example1.png)
+
+### Example 2: Sensor And Color Settings
+
+This shows the face settings panel for color gradients and sensor selection.
+
+![Example 2 - Settings for gradients and sensors](example2.png)
+
 ## Usage Notes
 
 - Pick temperature sensors in `Left Sensor` and `Right Sensor`.
